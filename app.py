@@ -8,6 +8,7 @@ import logging
 
 
 app = Flask(__name__)
+logging.info("Flask app initialized successfully")
 
 # Kurulum için günlük kaydı
 logging.basicConfig(level=logging.DEBUG)
@@ -23,8 +24,9 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Kendi API anahtarınızla değiştirin
-
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  
+# Kendi API anahtarınızla değiştirin
+logging.info("Google API call successful")
 # Gemini API istemcisini kur
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
@@ -32,6 +34,7 @@ llm = ChatGoogleGenerativeAI(
     temperature=0,
     max_tokens=2000
 )
+logging.info("Google API call successful")
 
 # Çıkarılan metni temizleme fonksiyonu
 def clean_text(text):
