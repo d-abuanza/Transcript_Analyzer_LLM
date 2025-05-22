@@ -5,12 +5,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import json
 import re
 import logging
-
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 app = Flask(__name__)
-logging.info("Flask app initialized successfully")
+logging.info("Flask uygulaması başarıyla başlatıldı")
 
-# Kurulum için günlük kaydı
+# Günlük kaydı için ayar
 logging.basicConfig(level=logging.DEBUG)
 
 # Yüklenen dosyalar için klasör
@@ -19,22 +19,23 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Google AI API anahtarı
+# Google AI API anahtarını yükle
 from dotenv import load_dotenv
-import os
-
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  
-# Kendi API anahtarınızla değiştirin
-logging.info("Google API call successful")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    logging.error("Google API anahtarı bulunamadı!")
+    raise ValueError("Google API anahtarı .env dosyasında mevcut değil")
+logging.info("Google API anahtarı başarıyla yüklendi")
+
 # Gemini API istemcisini kur
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     google_api_key=GOOGLE_API_KEY,
     temperature=0,
-    max_tokens=2000
+    max_tokens=4000
 )
-logging.info("Google API call successful")
+logging.info("Google Gemini istemcisi başarıyla başlatıldı")
 
 # Çıkarılan metni temizleme fonksiyonu
 def clean_text(text):
@@ -42,17 +43,68 @@ def clean_text(text):
     text = re.sub(r'[^\w\s\d\.\:\*\-]', '', text)
     return text
 
+# Metinden dersleri manuel olarak çıkarma fonksiyonu
+def extract_courses_from_text(text):
+    courses_by_semester = {}
+    current_semester = None
+    lines = text.split('\n')
+    for line in lines:
+        line = line.strip()
+        # Check if the line indicates a semester
+        if re.match(r'^\d+\.\s*Yarıyıl$', line):
+            current_semester = line
+            if current_semester not in courses_by_semester:
+                courses_by_semester[current_semester] = []
+        # Check if the line is a course
+        elif current_semester and re.match(r'^(BM|MTH)\d{3}\s+', line):
+            parts = line.split()
+            if len(parts) >= 5:  # Ders kodu, adı (birden fazla kelime), kredi, AKTS, harf notu
+                code = parts[0]  # Ders kodu (örneğin, "BM430")
+                grade = parts[-1]  # Harf notu (örneğin, "BB")
+                # Ders adı, kredi ve AKTS arasındaki kısmı al
+                name_parts = parts[1:-3]
+                name = " ".join(name_parts)
+                courses_by_semester[current_semester].append({
+                    "code": code,
+                    "name": name,
+                    "grade": grade
+                })
+    return courses_by_semester
+
+# Gemini API'den gelen derslerle manuel çıkarılan dersleri birleştirme
+def merge_extracted_courses(extracted_data, manual_courses):
+    for semester in extracted_data["semesters"]:
+        semester_name = semester["semester"]
+        if semester_name in manual_courses:
+            # Gemini API'nin çıkardığı ders kodlarını al
+            gemini_course_codes = {course["code"] for course in semester["courses"]}
+            # Manuel olarak çıkarılan derslerden eksik olanları ekle
+            for course in manual_courses[semester_name]:
+                if course["code"] not in gemini_course_codes:
+                    semester["courses"].append(course)
+                    logging.debug(f"Eksik ders eklendi: {semester_name} - {course['code']}")
+    return extracted_data
+
 # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesaplama
 def count_completed_electives(semesters):
     elective_courses = []
+    excluded_courses = []
+    all_elective_courses = []  # Tüm seçmeli dersleri takip etmek için
     for semester in semesters:
         if semester["semester"] in ["7. Yarıyıl", "8. Yarıyıl"]:
             for course in semester["courses"]:
                 if course["code"] in ["BM401", "BM499", "BM498"]:
+                    excluded_courses.append((course["code"], "Zorunlu ders"))
                     continue
                 if course["code"].startswith("BM") or course["code"].startswith("MTH"):
+                    all_elective_courses.append(course["code"])  # Tüm seçmeli dersleri kaydet
                     if course["grade"] not in ["FF", "FD"]:
                         elective_courses.append(course)
+                    else:
+                        excluded_courses.append((course["code"], f"Başarısız not: {course['grade']}"))
+    logging.debug(f"Tüm seçmeli dersler (7. ve 8. Yarıyıl): {all_elective_courses}")
+    logging.debug(f"Tamamlanan seçmeli dersler: {[course['code'] for course in elective_courses]}")
+    logging.debug(f"Hariç tutulan dersler: {excluded_courses}")
     return len(elective_courses)
 
 # Her yarıyıl için zorunlu derslerin listesi
@@ -146,53 +198,33 @@ def upload():
         ### Görev:
         1. Transkriptten tüm dersleri ve notlarını yarıyıl bazında çıkar.
         2. Her yarıyıl için Toplam AKTS değerini çıkar (genellikle her yarıyılın sonunda "Toplam AKTS" veya "AKTS" olarak görünür, 1 ile 60 arasında bir sayıdır).
-        3. Çıkarılan dersleri her yarıyıl için zorunlu ve seçmeli derslerle karşılaştır (aşağıda verilmiştir).
-        4. Eksik zorunlu veya seçmeli dersleri belirleyip listele.
-        5. Genel not ortalamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda "Genel" kelimesinden sonra görünür.
-        6. Her yarıyılın Toplam AKTS değerinin 30 veya daha fazla olup olmadığını kontrol et.
-        7. Genel not ortalamasının 2.50 veya daha yüksek olup olmadığını kontrol et.
-        8. Öğrencinin mezuniyet şartlarını karşılayıp karşılamadığını belirle:
-           - Tüm zorunlu dersler mevcut ve geçilmiş olmalı (FF veya FD dışında not, stajlar için YT).
-           - Tüm seçmeli ders gereksinimleri karşılanmış olmalı (her yarıyıl için doğru sayıda seçmeli ders).
-           - Her yarıyılın Toplam AKTS değeri ≥ 30 olmalı (30'dan fazla olabilir).
-           - Genel not ortalaması ≥ 2.50 olmalı.
-        9. Sonuçları yapılandırılmış JSON formatında döndür, öğrencinin mezun olup olmadığını belirten bir mesajla.
+        3. Eksik zorunlu dersleri belirleyip listele (zorunlu dersler aşağıدا verilmiştir).
+        4. Genel not ortالamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda "Genel" kelimesinden sonra görünür.
+        5. Her yarıyılın Toplam AKTS değerinin 30 veya daha fazla olup olmadığını kontrol et.
+        6. Genel not ortالamasının 2.50 veya daha yüksek olup olmadığını kontrol et.
+        7. Öğrencinin mezuniyet şartlarını karşılayıp karşılamadığını belirle (ancak hesaplamaları backend kodunda yapacağız).
 
         ### Talimatlar:
         - Her yarıyılı (örneğin, "1. Yarıyıl", "2. Yarıyıl" vb.) tanımlayın ve dersleri her yarıyıl altında listeleyin.
         - Her ders için ders kodu (örneğin, "AIB101"), ders adı (örneğin, "Atatürk İlkeleri ve İnkılap Tarihi I") ve not (örneğin, "AA", "BB", "CC", "DD", "FF", "FD", "YT") ekleyin.
         - Her yarıyıl için Toplam AKTS değerini çıkar ve JSON çıktısında her yarıyıl nesnesine "akts" anahtarıyla ekle.
-        - Bir dersin notu "YT" (Yeterli) ise, öğrenci bu dersi geçmiş demektir (genellikle stajlar için).
-        - Bir dersin geçilip geçilmediği şu şekilde belirlenir:
-          - Not "FF" veya "FD" değilse.
-          - Not "YT" ise (stajlar için).
-          - Not "FF" veya "FD" ise, ders başarısızdır.
-        - Çıkarılan dersleri her yarıyıl için gerekli derslerle (zorunlu ve seçmeli) karşılaştır:
-          - Eksik zorunlu dersleri listele.
-          - Notu "FF" veya "FD" olan zorunlu dersleri başarısız zorunlu dersler olarak listele (bunlar mezuniyeti engeller).
-          - 1-6. yarıyıllardaki seçmeli dersler için öğrencinin doğru önekle (örneğin, "US", "MS") gerekli sayıda dersi alıp almadığını kontrol et.
-          - 7. ve 8. yarıyıllardaki seçmeli dersler için:
-            - Seçmeli dersler "BM" veya "MTH" önekiyle başlar.
-            - Öğrenci 7. ve 8. yarıyıllarda toplam 10 seçmeli ders tamamlamalıdır.
-            - "BM401", "BM499" ve "BM498" kodlu dersler zorunludur ve seçmeli olarak sayılmaz.
-            - Notu "FF" veya "FD" olan seçmeli dersler (BM veya MTH önekli) başarısız sayılmaz, sadece gerekli 10 seçmeli ders için sayılmaz.
+        - Transkript metninde tüm dersleri açıkça listele, hiçbir dersi atlama:
+          - Örnek ders formatı: "BM430 Proje Yönetimi 3.0 5.0 BB" -> {{"code": "BM430", "name": "Proje Yönetimi", "grade": "BB"}}
+          - 7. ve 8. yarıyıllarda "BM" veya "MTH" önekiyle başlayan tüm dersleri listele (örneğin: "BM424 Derleyici Tasarımı", "BM496 Bilgi Mühendisliği ve Büyük Veriye Giriş").
+        - Eksik zorunlu dersleri listele (zorunlu dersler aşağıدا verilmiştir).
         - Her yarıyıl için Toplam AKTS değerinin ≥ 30 olup olmadığını kontrol et. Eğer bir yarıyılın AKTS değeri 30'dan düşükse, bunu "akts_issues" listesinde şu formatta belirt: "[Yarıyıl]: Toplam AKTS [değer] < 30".
-        - Genel not ortalamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda, "Genel" kelimesinden sonra görünür. Not ortalaması bir sayıdır (örneğin, "2.63").
-        - Genel not ortalamasının ≥ 2.50 olup olmadığını kontrol et.
-        - Öğrencinin mezun olup olamayacağını belirle:
-          - Öğrenci mezun olabilir eğer:
-            - Tüm zorunlu dersler mevcut ve geçilmiş.
-            - Tüm seçmeli ders gereksinimleri karşılanmış (7. ve 8. yarıyıllarda 10 seçmeli ders dahil).
-            - Her yarıyılın Toplam AKTS değeri ≥ 30.
-            - Genel not ortalaması ≥ 2.50.
-          - Aksi takdirde, öğrenci mezun olamaz.
-        - Transkript metni tutarsız biçimlendirme içerebilir (örneğin, fazla boşluk, eksik satırlar veya özel karakterler). En iyi şekilde ayrıştırmaya çalış.
-        - Transkripti ayrıştıramazsanız veya gerekli bilgileri belirleyemezseniz, boş bir JSON nesnesi döndür:
+        - Genel not ortالamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda, "Genel" kelimesinden sonra görünür. Not ortalaması bir sayıdır (örneğin, "2.63").
+        - Genel not ortالamasının ≥ 2.50 olup olmadığını kontrol et.
+        - Transkript metni tutarsız biçimlendirme içerebilir (örneğin، fazla boşluk، eksik satırlar veya özel karakterler). En iyi şekilde ayrıştırmaya çalış:
+          - Ders kodları genellikle 5-6 karakter uzunluğundadır (örneğin, "BM430", "BM424").
+          - Ders adları birden fazla kelime olabilir (örneğin, "Proje Yönetimi", "Makine Öğrenmesine Giriş").
+          - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT" formatındadır.
+        - Transkripti ayrıştıramazsanız veya gerekli bilgileri belirleyemezseniz، boş bir JSON nesnesi döndür:
           ```json
           {{}}
           ```
-        - Çıktının geçerli JSON formatında olduğundan emin olun (örneğin, dizeler için çift tırnak kullanın, doğru iç içe yapı).
-        - "graduation_message" alanının Türkçe olduğundan emin olun, şu formatta: "Üzgünüz, öğrenci bazı zorunlu derslerde başarısız olduğu için mezun olamadı." veya "Tebrikler! Öğrenci tüm mezuniyet şartlarını karşıladı."
+        - Çıktının geçerli JSON formatında olduğundan emin olun (örneğin، dizeler için çift tırnak kullanın، doğru iç içه yapı).
+        - "graduation_message" alanını şimdilik boş bırak, bunu backend'de dolduracağız.
         - Sonucu aşağıdaki JSON formatında döndür:
 
         ```json
@@ -213,90 +245,17 @@ def upload():
             {{"semester": "1. Yarıyıl", "code": "AIB101", "name": "Atatürk İlkeleri ve İnkılap Tarihi I"}},
             ...
           ],
-          "elective_issues": [
-            "7. ve 8. Yarıyıl: Gerekli 10 seçmeli dersten 3'ünü tamamladı (BM veya MTH).",
-            ...
-          ],
           "akts_issues": [
             "1. Yarıyıl: Toplam AKTS 25 < 30",
             ...
           ],
-          "failed_mandatory": [
-            {{"semester": "6. Yarıyıl", "code": "BM302", "name": "Bilgisayar Ağları II", "grade": "FF"}},
-            ...
-          ],
           "can_graduate": false,
-          "graduation_message": "Üzgünüz, öğrenci bazı zorunlu derslerde başarısız olduğu için mezun olamadı."
+          "graduation_message": ""
         }}
         ```
 
         ### Yarıyıl Bazında Gerekli Dersler:
         {json.dumps(MANDATORY_COURSES, ensure_ascii=False, indent=2)}
-
-        ### 7. ve 8. Yarıyıl için Seçmeli Dersler (BM veya MTH önekli):
-        - BM429: Optimizasyon
-        - BM433: Sayısal İşaret İşleme
-        - BM447: Sayısal Görüntü İşleme
-        - BM480: Derin Öğrenme
-        - BM455: Bulanık Mantığa Giriş
-        - BM437: Yapay Zeka
-        - BM489: Programlanabilir Mantık Denetleyiciler
-        - BM441: Bilgisayar Güvenliğine Giriş
-        - BM449: Ağ Güvenliğine Giriş
-        - BM472: Ağ Programlama
-        - BM481: Sanallaştırma Teknolojileri
-        - BM478: Python İle Veri Bilimine Giriş
-        - BM471: Gömülü Sistem Uygulamaları
-        - BM482: Yazılım Gereksinimleri Mühendisliği
-        - BM485: Dosya Organizasyonu
-        - BM486: Sayısal Sistem Tasarım
-        - BM487: Nesnelerin İnterneti
-        - BM488: Veri Analizi ve Tahminleme Yöntemleri
-        - BM490: Bilgi Güvenliği
-        - BM491: Sistem Biyolojisi
-        - BM492: Tıbbi İstatistik ve Tıp Bilimine Giriş
-        - BM493: Veri İletişimi
-        - BM494: Kablosuz Haberleşme
-        - BM495: İleri Gömülü Sistem Uygulamaları
-        - BM422: Biyobilişime Giriş
-        - BM438: Yurtdışı Staj Etkinliği
-        - BM428: Oyun Programlamaya Giriş
-        - BM459: Yazılım Test Mühendisliği
-        - BM475: Kurumsal Java
-        - BM479: Kompleks Ağ Analizi
-        - BM423: Bulanık Mantık ve Yapay Sinir Ağlarına Giriş
-        - BM435: Veri Madenciliği
-        - BM463: İleri Sistem Programlama
-        - BM440: Veri Tabanı Tasarımı ve Uygulamaları
-        - BM457: Bilgisayar Aritmetiği ve Otomata
-        - BM442: Görsel Programlama
-        - BM430: Proje Yönetimi
-        - BM469: Makine Öğrenmesine Giriş
-        - BM424: Derleyici Tasarımı
-        - BM451: Kontrol Sistemlerine Giriş
-        - BM432: Robotik
-        - BM434: Sayısal Kontrol Sistemleri
-        - BM465: Mikrodenetleyiciler ve Uygulamaları
-        - BM420: Bilgisayar Mimarileri
-        - BM431: Örüntü Tanıma
-        - BM426: Gerçek Zamanlı Ağ Sistemleri
-        - BM436: Sistem Simülasyonu
-        - BM461: Coğrafi Bilgi Sistemleri
-        - BM474: ERP Uygulamaları
-        - BM427: İnternet Mühendisliği
-        - BM453: İçerik Yönetim Sistemleri
-        - BM439: Bilgisayar Görmesi
-        - BM425: Erp Sistemleri
-        - BM473: Karar Destek Sistemleri
-        - BM443: Mobil Programlama
-        - BM445: Java Programlama
-        - BM470: İleri Java Programlama
-        - BM496: Bilgi Mühendisliği ve Büyük Veriye Giriş
-        - BM421: Bilgisayar Grafiği
-        - BM477: Graf Teorisi
-        - BM444: Yazılım Tasarım Kalıpları
-        - BM467: Kodlama Teorisi ve Kriptografi
-        - BM476: Açık Kaynak Programlama
 
         ### Transkript Metni:
         {text}
@@ -308,7 +267,11 @@ def upload():
                 ("system", "Akademik transkriptleri analiz eden yardımcı bir asistansınız."),
                 ("human", prompt)
             ]
-            ai_msg = llm.invoke(messages)
+            @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+            def invoke_gemini(messages):
+                return llm.invoke(messages)
+
+            ai_msg = invoke_gemini(messages)
             logging.debug(f"Gemini API yanıtı: {ai_msg.content}")
 
             # Yanıtın boş olup olmadığını kontrol et
@@ -326,8 +289,40 @@ def upload():
             if not response_content:
                 return "Gemini API yanıtı temizlendikten sonra boş!", 500
 
-            # Yanıtı JSON'a dönüştürmه
-            extracted_data = json.loads(response_content)
+            # JSON ayrıştırmadan önce yanıtı kontrol et ودüzelt
+            try:
+                extracted_data = json.loads(response_content)
+            except json.JSONDecodeError as e:
+                logging.warning(f"JSON ayrıştırma hatası: {str(e)}. Yanıtı düzeltmeyi deniyorum...")
+                if response_content.endswith(']') or response_content.endswith('}'):
+                    response_content += '}'
+                else:
+                    response_content += ']}'
+                try:
+                    extracted_data = json.loads(response_content)
+                except json.JSONDecodeError as e:
+                    return f"Gemini API yanıtını ayrıştırma hatası (geçerli JSON değil): {str(e)}\nYanıt: {response_content}", 500
+
+            # Manuel olarak dersleri çıkar ve Gemini API yanıtına ekle
+            manual_courses = extract_courses_from_text(text)
+            extracted_data = merge_extracted_courses(extracted_data, manual_courses)
+
+            # Başarısız zorunlu dersleri kontrol et (yerel olarak)
+            failed_mandatory = []
+            for semester in extracted_data["semesters"]:
+                semester_name = semester["semester"]
+                if semester_name in MANDATORY_COURSES:
+                    for course in semester["courses"]:
+                        # Check if the course is mandatory
+                        mandatory_course = next((mc for mc in MANDATORY_COURSES[semester_name] if mc["code"] == course["code"]), None)
+                        if mandatory_course and course["grade"] in ["FF", "FD"]:
+                            failed_mandatory.append({
+                                "semester": semester_name,
+                                "code": course["code"],
+                                "name": course["name"],
+                                "grade": course["grade"]
+                            })
+            extracted_data["failed_mandatory"] = failed_mandatory
 
             # Zorunlu derslerin eksik olup olmadığını kontrol et
             for semester in extracted_data["semesters"]:
@@ -349,15 +344,14 @@ def upload():
                     akts_issues.append(f"{semester['semester']}: Toplam AKTS {akts} < 30")
             extracted_data["akts_issues"] = akts_issues
 
-            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapla
+            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapلا
             completed_electives = count_completed_electives(extracted_data["semesters"])
 
             # elective_issues'ı güncelle
             required_electives = 10
+            extracted_data["elective_issues"] = []  # elective_issues'ı sıfırla
             if completed_electives < required_electives:
                 elective_issue = f"7. ve 8. Yarıyıl: Gerekli {required_electives} seçmeli dersten {completed_electives}'ünü tamamladı (BM veya MTH)."
-                extracted_data["elective_issues"] = [issue for issue in extracted_data["elective_issues"] if
-                                                    not issue.startswith("7. ve 8. Yarıyıl:")]
                 extracted_data["elective_issues"].append(elective_issue)
 
             # Mezuniyet durumunu güncelle
@@ -383,11 +377,13 @@ def upload():
                 extracted_data["can_graduate"] = False
                 extracted_data["graduation_message"] = f"Üzgünüz, öğrenci {', '.join(reasons)} nedeniyle mezun olamadı."
 
-            # Sonuçları sonuç sayfasına geçir
-            return render_template('result.html', extracted_data=extracted_data)
-        except json.JSONDecodeError as e:
-            return f"Gemini API yanıtını ayrıştırma hatası (geçerli JSON değil): {str(e)}\nYanıt: {response_content}", 500
+            # Sonuçları sonuç sayfasına geçir مع النص المستخرج
+            return render_template('result.html', extracted_data=extracted_data, extracted_text=text)
         except Exception as e:
+            if "429" in str(e):
+                logging.error(f"Kota aşımı hatası: {str(e)}")
+                return "Üzgünüz, Google Gemini API kota limitiniz aşıldı. Lütfen Google AI Studio veya Google Cloud Console'da kota durumunuzu kontrol edin.", 429
+            logging.error(f"Gemini API ile iletişim veya veri ayrıştırma hatası: {str(e)}")
             return f"Gemini API ile iletişim veya veri ayrıştırma hatası: {str(e)}", 500
 
     return "Desteklenmeyen dosya türü! Lütfen yalnızca .docx dosyası yükleyin.", 400
