@@ -56,11 +56,11 @@ def extract_courses_from_text(text):
             if current_semester not in courses_by_semester:
                 courses_by_semester[current_semester] = []
         # Check if the line is a course
-        elif current_semester and re.match(r'^(BM|MTH)\d{3}\s+', line):
+        elif current_semester and re.match(r'^(BM|MTH|US|MS|AIB|TDB|FIZ|MAT|ING|KRP)\d{3}\s+', line):
             parts = line.split()
             if len(parts) >= 5:  # Ders kodu, adı (birden fazla kelime), kredi, AKTS, harf notu
-                code = parts[0]  # Ders kodu (örneğin, "BM430")
-                grade = parts[-1]  # Harf notu (örneğin, "BB")
+                code = parts[0]  # Ders kodu (örneğin, "BM430", "US201", "MS301")
+                grade = parts[-1]  # Harf notu (örneğin, "BB", "FF")
                 # Ders adı, kredi ve AKTS arasındaki kısmı al
                 name_parts = parts[1:-3]
                 name = " ".join(name_parts)
@@ -171,6 +171,70 @@ MANDATORY_COURSES = {
     ]
 }
 
+# قائمة الدروس الاختيارية
+ELECTIVE_COURSES = {
+    "3. Yarıyıl": [
+        {"code": "US201", "name": "Bilim Tarihi ve Felsefesi"},
+        {"code": "US207", "name": "Girişimcilik"},
+        {"code": "US211", "name": "İş Psikolojisi"},
+        {"code": "US213", "name": "İşletme Yönetimi"},
+        {"code": "US215", "name": "Kültür Tarihi"},
+        {"code": "US217", "name": "Sanat Tarihi"},
+        {"code": "US219", "name": "Sivil Toplum Organizasyonları"},
+        {"code": "US221", "name": "Uygarlık Tarihi"},
+        {"code": "US225", "name": "Girişimcilik I"},
+        {"code": "US227", "name": "Girişimcilik II"},
+        {"code": "US203", "name": "Çevre ve Enerji"},
+        {"code": "US209", "name": "İletişim Tekniği"},
+        {"code": "US205", "name": "Davranış Bilimine Giriş"}
+    ],
+    "4. Yarıyıl": [
+        {"code": "US201", "name": "Bilim Tarihi ve Felsefesi"},
+        {"code": "US207", "name": "Girişimcilik"},
+        {"code": "US211", "name": "İş Psikolojisi"},
+        {"code": "US213", "name": "İşletme Yönetimi"},
+        {"code": "US215", "name": "Kültür Tarihi"},
+        {"code": "US217", "name": "Sanat Tarihi"},
+        {"code": "US219", "name": "Sivil Toplum Organizasyonları"},
+        {"code": "US221", "name": "Uygarlık Tarihi"},
+        {"code": "US225", "name": "Girişimcilik I"},
+        {"code": "US227", "name": "Girişimcilik II"},
+        {"code": "US203", "name": "Çevre ve Enerji"},
+        {"code": "US209", "name": "İletişim Tekniği"},
+        {"code": "US205", "name": "Davranış Bilimine Giriş"}
+    ],
+    "5. Yarıyıl": [
+        {"code": "MS301", "name": "Endüstri İlişkileri"},
+        {"code": "MS303", "name": "Meslek Hastalıkları"},
+        {"code": "MS305", "name": "Teknoloji Felsefesi"},
+        {"code": "MS307", "name": "Mühendisler İçin Yönetim"},
+        {"code": "MS309", "name": "Mühendislik Etiği"},
+        {"code": "MS311", "name": "Kalite Yönetim Sistemleri ve Uygulaması"},
+        {"code": "MS313", "name": "Toplam Kalite Yönetimi"},
+        {"code": "MS315", "name": "İş Güvenliği"},
+        {"code": "MS317", "name": "İş Hukuku"},
+        {"code": "MS319", "name": "Mühendislik Ekonomisi"},
+        {"code": "MS321", "name": "Bilişim Teknolojilerinde Yeni Gelişmeler"},
+        {"code": "MS323", "name": "Betik Dilleri"},
+        {"code": "MS332", "name": "Bilimsel Araştırma ve Rapor Yazma"}
+    ],
+    "6. Yarıyıl": [
+        {"code": "MS301", "name": "Endüstri İlişkileri"},
+        {"code": "MS303", "name": "Meslek Hastalıkları"},
+        {"code": "MS305", "name": "Teknoloji Felsefesi"},
+        {"code": "MS307", "name": "Mühendisler İçin Yönetim"},
+        {"code": "MS309", "name": "Mühendislik Etiği"},
+        {"code": "MS311", "name": "Kalite Yönetim Sistemleri ve Uygulaması"},
+        {"code": "MS313", "name": "Toplam Kalite Yönetimi"},
+        {"code": "MS315", "name": "İş Güvenliği"},
+        {"code": "MS317", "name": "İş Hukuku"},
+        {"code": "MS319", "name": "Mühendislik Ekonomisi"},
+        {"code": "MS321", "name": "Bilişim Teknolojilerinde Yeni Gelişmeler"},
+        {"code": "MS323", "name": "Betik Dilleri"},
+        {"code": "MS331", "name": "Mühendislikte Temel Bilgiler"}
+    ]
+}
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -198,10 +262,10 @@ def upload():
         ### Görev:
         1. Transkriptten tüm dersleri ve notlarını yarıyıl bazında çıkar.
         2. Her yarıyıl için Toplam AKTS değerini çıkar (genellikle her yarıyılın sonunda "Toplam AKTS" veya "AKTS" olarak görünür, 1 ile 60 arasında bir sayıdır).
-        3. Eksik zorunlu dersleri belirleyip listele (zorunlu dersler aşağıدا verilmiştir).
-        4. Genel not ortالamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda "Genel" kelimesinden sonra görünür.
+        3. Eksik zorunlu dersleri belirleyip listele (zorunlu dersler aşağıda verilmiştir).
+        4. Genel not ortalamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda "Genel" kelimesinden sonra görünür.
         5. Her yarıyılın Toplam AKTS değerinin 30 veya daha fazla olup olmadığını kontrol et.
-        6. Genel not ortالamasının 2.50 veya daha yüksek olup olmadığını kontrol et.
+        6. Genel not ortalamasının 2.50 veya daha yüksek olup olmadığını kontrol et.
         7. Öğrencinin mezuniyet şartlarını karşılayıp karşılamadığını belirle (ancak hesaplamaları backend kodunda yapacağız).
 
         ### Talimatlar:
@@ -211,13 +275,15 @@ def upload():
         - Transkript metninde tüm dersleri açıkça listele, hiçbir dersi atlama:
           - Örnek ders formatı: "BM430 Proje Yönetimi 3.0 5.0 BB" -> {{"code": "BM430", "name": "Proje Yönetimi", "grade": "BB"}}
           - 7. ve 8. yarıyıllarda "BM" veya "MTH" önekiyle başlayan tüm dersleri listele (örneğin: "BM424 Derleyici Tasarımı", "BM496 Bilgi Mühendisliği ve Büyük Veriye Giriş").
-        - Eksik zorunlu dersleri listele (zorunlu dersler aşağıدا verilmiştir).
+          - 3. ve 4. yarıyıllarda "US" önekiyle başlayan dersleri listele (örneğin: "US201 Bilim Tarihi ve Felsefesi").
+          - 5. ve 6. yarıyıllarda "MS" önekiyle başlayan dersleri listele (örneğin: "MS301 Endüstri İlişkileri").
+        - Eksik zorunlu dersleri listele (zorunlu dersler aşağıda verilmiştir).
         - Her yarıyıl için Toplam AKTS değerinin ≥ 30 olup olmadığını kontrol et. Eğer bir yarıyılın AKTS değeri 30'dan düşükse, bunu "akts_issues" listesinde şu formatta belirt: "[Yarıyıl]: Toplam AKTS [değer] < 30".
-        - Genel not ortالamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda, "Genel" kelimesinden sonra görünür. Not ortalaması bir sayıdır (örneğin, "2.63").
-        - Genel not ortالamasının ≥ 2.50 olup olmadığını kontrol et.
+        - Genel not ortalamasını (Genel Ortalama) çıkar, genellikle 8. yarıyılın sonunda, "Genel" kelimesinden sonra görünür. Not ortalaması bir sayıdır (örneğin, "2.63").
+        - Genel not ortalamasının ≥ 2.50 olup olmadığını kontrol et.
         - Transkript metni tutarsız biçimlendirme içerebilir (örneğin، fazla boşluk، eksik satırlar veya özel karakterler). En iyi şekilde ayrıştırmaya çalış:
-          - Ders kodları genellikle 5-6 karakter uzunluğundadır (örneğin, "BM430", "BM424").
-          - Ders adları birden fazla kelime olabilir (örneğin, "Proje Yönetimi", "Makine Öğrenmesine Giriş").
+          - Ders kodları genellikle 5-6 karakter uzunluğundadır (örneğin, "BM430", "US201", "MS301").
+          - Ders adları birden fazla kelime olabilir (örneğin, "Proje Yönetimi", "Bilim Tarihi ve Felsefesi").
           - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT" formatındadır.
         - Transkripti ayrıştıramazsanız veya gerekli bilgileri belirleyemezseniz، boş bir JSON nesnesi döndür:
           ```json
@@ -257,6 +323,9 @@ def upload():
         ### Yarıyıl Bazında Gerekli Dersler:
         {json.dumps(MANDATORY_COURSES, ensure_ascii=False, indent=2)}
 
+        ### Yarıyıl Bazında Seçmeli Dersler:
+        {json.dumps(ELECTIVE_COURSES, ensure_ascii=False, indent=2)}
+
         ### Transkript Metni:
         {text}
         """
@@ -278,7 +347,7 @@ def upload():
             if not ai_msg.content or ai_msg.content.strip() == "":
                 return "Gemini API yanıtı boş!", 500
 
-            # Gemini API yanıtını temizله
+            # Gemini API yanıtını temizle
             response_content = ai_msg.content.strip()
             if response_content.startswith('```json'):
                 response_content = response_content[7:]
@@ -289,7 +358,7 @@ def upload():
             if not response_content:
                 return "Gemini API yanıtı temizlendikten sonra boş!", 500
 
-            # JSON ayrıştırmadan önce yanıtı kontrol et ودüzelt
+            # JSON ayrıştırmadan önce yanıtı kontrol et ve düzelt
             try:
                 extracted_data = json.loads(response_content)
             except json.JSONDecodeError as e:
@@ -313,8 +382,8 @@ def upload():
                 semester_name = semester["semester"]
                 if semester_name in MANDATORY_COURSES:
                     for course in semester["courses"]:
-                        # Check if the course is mandatory
-                        mandatory_course = next((mc for mc in MANDATORY_COURSES[semester_name] if mc["code"] == course["code"]), None)
+                        mandatory_course = next(
+                            (mc for mc in MANDATORY_COURSES[semester_name] if mc["code"] == course["code"]), None)
                         if mandatory_course and course["grade"] in ["FF", "FD"]:
                             failed_mandatory.append({
                                 "semester": semester_name,
@@ -325,6 +394,7 @@ def upload():
             extracted_data["failed_mandatory"] = failed_mandatory
 
             # Zorunlu derslerin eksik olup olmadığını kontrol et
+            extracted_data.setdefault("missing_mandatory", [])
             for semester in extracted_data["semesters"]:
                 semester_name = semester["semester"]
                 if semester_name in MANDATORY_COURSES:
@@ -336,6 +406,25 @@ def upload():
                                 "name": req_course["name"]
                             })
 
+            # Başarısız seçmeli dersleri kontrol et (US ve MS)
+            failed_electives = []
+            failed_elective_codes = set()  # تتبع الدروس الراسبة لمنع التكرار
+            for semester in extracted_data["semesters"]:
+                semester_name = semester["semester"]
+                if semester_name in ELECTIVE_COURSES:
+                    for course in semester["courses"]:
+                        elective_course = next(
+                            (ec for ec in ELECTIVE_COURSES[semester_name] if ec["code"] == course["code"]), None)
+                        if elective_course and course["grade"] in ["FF", "FD"] and course["code"] not in failed_elective_codes:
+                            failed_electives.append({
+                                "semester": semester_name,
+                                "code": course["code"],
+                                "name": course["name"],
+                                "grade": course["grade"]
+                            })
+                            failed_elective_codes.add(course["code"])
+            extracted_data["failed_electives"] = failed_electives
+
             # AKTS sorunlarını kontrol et
             akts_issues = []
             for semester in extracted_data["semesters"]:
@@ -344,7 +433,7 @@ def upload():
                     akts_issues.append(f"{semester['semester']}: Toplam AKTS {akts} < 30")
             extracted_data["akts_issues"] = akts_issues
 
-            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapلا
+            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapla
             completed_electives = count_completed_electives(extracted_data["semesters"])
 
             # elective_issues'ı güncelle
@@ -354,12 +443,18 @@ def upload():
                 elective_issue = f"7. ve 8. Yarıyıl: Gerekli {required_electives} seçmeli dersten {completed_electives}'ünü tamamladı (BM veya MTH)."
                 extracted_data["elective_issues"].append(elective_issue)
 
+            # Başarısız seçmeli dersler için sorunları ekle (US ve MS)
+            for failed_elective in failed_electives:
+                elective_issue = f"{failed_elective['semester']} döneminde '{failed_elective['name']}' seçmeli dersinden {failed_elective['grade']} ile başarısız oldunuz."
+                extracted_data["elective_issues"].append(elective_issue)
+
             # Mezuniyet durumunu güncelle
             if (completed_electives >= required_electives and
                 not extracted_data["missing_mandatory"] and
                 not extracted_data["failed_mandatory"] and
+                not extracted_data["failed_electives"] and
                 not extracted_data["akts_issues"] and
-                extracted_data["gpa"] >= 2.50):
+                extracted_data.get("gpa", 0) >= 2.50):
                 extracted_data["can_graduate"] = True
                 extracted_data["graduation_message"] = "Tebrikler! Öğrenci tüm mezuniyet şartlarını karşıladı."
             else:
@@ -368,17 +463,19 @@ def upload():
                     reasons.append("bazı zorunlu derslerin eksikliği")
                 if extracted_data["failed_mandatory"]:
                     reasons.append("bazı zorunlu derslerde başarısızlık")
+                if extracted_data["failed_electives"]:
+                    reasons.append("bazı seçmeli derslerde başarısızlık")
                 if completed_electives < required_electives:
                     reasons.append("seçmeli ders sayısında eksiklik")
                 if extracted_data["akts_issues"]:
                     reasons.append("bazı yarıyıllarda AKTS eksikliği")
-                if extracted_data["gpa"] < 2.50:
-                    reasons.append("genel not ortalaması 2.50'nin altında")
+                if extracted_data.get("gpa", 0) < 2.50:
+                    reasons.append(f"genel not ortalaması {extracted_data.get('gpa', 0)} (2.50'nin altında)")
                 extracted_data["can_graduate"] = False
-                extracted_data["graduation_message"] = f"Üzgünüz, öğrenci {', '.join(reasons)} nedeniyle mezun olamadı."
+                extracted_data["graduation_message"] = f"Üzgünüz, öğrenci aşağıdaki nedenlerden dolayı mezun olamadı: {', '.join(reasons)}."
 
-            # Sonuçları sonuç sayfasına geçir مع النص المستخرج
-            return render_template('result.html', extracted_data=extracted_data, extracted_text=text)
+            # Sonuçları sonuç sayfasına geçir (extracted_text kaldırıldı)
+            return render_template('result.html', extracted_data=extracted_data)
         except Exception as e:
             if "429" in str(e):
                 logging.error(f"Kota aşımı hatası: {str(e)}")
