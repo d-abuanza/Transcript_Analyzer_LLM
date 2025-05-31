@@ -41,49 +41,61 @@ logging.info("Google Gemini istemcisi başarıyla başlatıldı")
 
 # Çıkarılan metni temizleme fonksiyonu
 def clean_text(text):
-    # Birden fazla boşluğu tek boşluğa indir
     text = re.sub(r'\s+', ' ', text.strip())
-    # Özel karakterleri temizle, ancak harf, rakam, boşluk ve bazı temel karakterleri koru
-    text = re.sub(r'[^\w\s\d\.\:\*\-\(\)]', '', text)
-    # Ders kodlarını büyük harfe çevir (örneğin, "bm211" -> "BM211")
-    text = re.sub(r'\b(bm|mth|us|ms|aib|tdb|fiz|mat|ing|krp)(\d{3})\b', lambda m: f"{m.group(1).upper()}{m.group(2)}",
-                  text, flags=re.IGNORECASE)
+    text = re.sub(r'[^\w\s\d\.\:\*\-\(\)]', '', text)  # Parantezleri koru
     return text
 
 
 # Metinden dersleri manuel olarak çıkarma fonksiyonu
 def extract_courses_from_text(text):
     courses_by_semester = {}
-    current_semester = None
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
-        # Check if the line indicates a semester
-        semester_match = re.match(r'^\d+\.\s*Yarıyıl$', line)
+        # Daha esnek bir format: "BM211 - Diferansiyel Denklemler (Yarıyıl: 3. Yarıyıl)" veya benzeri varyasyonlar
+        course_match = re.match(
+            r'^(BM|MTH|US|MS|AIB|TDB|FIZ|MAT|ING|KRP)\d{3}\s*[-–]\s*([^()]+)\s*\(Yarıyıl:\s*(\d+\.\s*Yarıyıl)\)', line,
+            re.UNICODE)
+        if course_match:
+            code = course_match.group(1).strip()
+            name = course_match.group(2).strip()
+            semester = course_match.group(3).strip()
+            grade = "BB"  # Varsayılan not
+            if semester not in courses_by_semester:
+                courses_by_semester[semester] = []
+            courses_by_semester[semester].append({
+                "code": code,
+                "name": name,
+                "grade": grade
+            })
+            logging.debug(f"Ders eklendi: {semester} - {code} - {name} - {grade}")
+        # Eski format: "BM211 Diferansiyel Denklemler 3.0 5.0 BB"
+        semester_match = re.match(r'^\d+\.\s*Yarıyıl\s*$', line) or re.match(r'^\d+\s*Yarıyıl\s*$', line)
         if semester_match:
-            current_semester = semester_match.group(0)
+            current_semester = semester_match.group(0).replace(" ", "").strip()
+            if not re.search(r'\d+\. Yarıyıl', current_semester):
+                current_semester = current_semester.replace("Yarıyıl", ". Yarıyıl")
             if current_semester not in courses_by_semester:
                 courses_by_semester[current_semester] = []
             logging.debug(f"Yarıyıl bulundu: {current_semester}")
-        # Check if the line is a course
-        elif current_semester:
-            # Ders satırını eşleştirmek için daha esnek bir regex
-            course_match = re.match(
-                r'^(BM|MTH|US|MS|AIB|TDB|FIZ|MAT|ING|KRP)\d{3}\s+(.+?)\s+\d+\.\d+\s+\d+\.\d+\s+(\w{2})$', line)
-            if course_match:
-                code = course_match.group(1) + course_match.group(1)[2:]  # Ders kodu (örneğin, "BM211")
-                name = course_match.group(2).strip()  # Ders adı
-                grade = course_match.group(3)  # Harf notu (örneğin, "BB", "YT")
-                courses_by_semester[current_semester].append({
-                    "code": code.upper(),
-                    "name": name,
-                    "grade": grade
-                })
-                logging.debug(f"Ders çıkarıldı: {current_semester} - {code} {name} ({grade})")
-            else:
-                logging.debug(f"Ders satırı eşleşmedi: {line}")
+        elif re.match(r'^(BM|MTH|US|MS|AIB|TDB|FIZ|MAT|ING|KRP)\d{3}\s+', line):
+            parts = line.split()
+            if len(parts) >= 5:
+                code = parts[0].strip()
+                grade = parts[-1].strip()
+                name_parts = parts[1:-3]
+                name = " ".join(name_parts).strip()
+                if current_semester:
+                    if current_semester not in courses_by_semester:
+                        courses_by_semester[current_semester] = []
+                    courses_by_semester[current_semester].append({
+                        "code": code,
+                        "name": name,
+                        "grade": grade
+                    })
+                    logging.debug(f"Ders eklendi: {current_semester} - {code} - {name} - {grade}")
+    logging.debug(f"Toplam çıkarılan yarıyıllar: {list(courses_by_semester.keys())}")
+    logging.debug(f"Çıkarılan dersler: {courses_by_semester}")
     return courses_by_semester
 
 
@@ -92,32 +104,31 @@ def merge_extracted_courses(extracted_data, manual_courses):
     for semester in extracted_data["semesters"]:
         semester_name = semester["semester"]
         if semester_name in manual_courses:
-            # Gemini API'nin çıkardığı ders kodlarını al
-            gemini_course_codes = {course["code"] for course in semester["courses"]}
-            # Manuel olarak çıkarılan derslerden eksik olanları ekle
+            gemini_course_codes = {course["code"].strip() for course in semester["courses"]}
             for course in manual_courses[semester_name]:
-                if course["code"] not in gemini_course_codes:
+                if course["code"].strip() not in gemini_course_codes:
                     semester["courses"].append(course)
                     logging.debug(f"Eksik ders eklendi: {semester_name} - {course['code']}")
+    logging.debug(f"Birleştirilmiş extracted_data: {extracted_data}")
     return extracted_data
 
 
-# 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesaplama (veya son mevcut yarıyıl)
+# 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesaplama
 def count_completed_electives(semesters):
     elective_courses = []
     excluded_courses = []
-    all_elective_courses = []  # Tüm seçmeli dersleri takip etmek için
-    # Mevcut yarıyılları kontrol et
-    available_semesters = [sem["semester"] for sem in semesters]
-    # Son yarıyılı bul
-    last_semester = max([int(sem.split('.')[0]) for sem in available_semesters])
+    all_elective_courses = []
 
-    # Eğer son yarıyıl 6 veya daha küçükse, seçmeli ders şartı yok
+    available_semesters = [sem["semester"] for sem in semesters]
+    if not available_semesters:
+        logging.debug("Hiçbir yarıyıl bulunamadı, seçmeli ders şartı kontrol edilmedi.")
+        return 0
+
+    last_semester = max([int(sem.split('.')[0]) for sem in available_semesters])
     if last_semester < 7:
         logging.debug(f"Son yarıyıl {last_semester} < 7, seçmeli ders şartı kontrol edilmedi.")
         return 0
 
-    # Eğer son yarıyıl 7 ise sadece 7. yarıyılı kontrol et, 8 ise 7 ve 8'i kontrol et
     semesters_to_check = ["7. Yarıyıl", "8. Yarıyıl"] if last_semester >= 8 else ["7. Yarıyıl"]
 
     for semester in semesters:
@@ -127,7 +138,7 @@ def count_completed_electives(semesters):
                     excluded_courses.append((course["code"], "Zorunlu ders"))
                     continue
                 if course["code"].startswith("BM") or course["code"].startswith("MTH"):
-                    all_elective_courses.append(course["code"])  # Tüm seçmeli dersleri kaydet
+                    all_elective_courses.append(course["code"])
                     if course["grade"] not in ["FF", "FD"]:
                         elective_courses.append(course)
                     else:
@@ -304,21 +315,22 @@ def upload():
 
         ### Talimatlar:
         - Her yarıyılı (örneğin, "1. Yarıyıl", "2. Yarıyıl" vb.) tanımlayın ve dersleri her yarıyıl altında listeleyin.
-        - Her ders için ders kodu (örneğin, "AIB101"), ders adı (örneğin, "Atatürk İlkeleri ve İnkılap Tarihi I") ve not (örneğin, "AA", "BB", "CC", "DD", "FF", "FD", "YT", "YZ") ekleyin.
+        - Her ders için ders kodu (örneğin, "AIB101"), ders adı (örneğin, "Atatürk İlkeleri ve İnkılap Tarihi I") ve not (örneğin, "AA", "BB", "CC", "DD", "FF", "FD", "YT") ekleyin.
         - Her yarıyıl için Toplam AKTS değerini çıkar ve JSON çıktısında her yarıyıl nesnesine "akts" anahtarıyla ekle.
         - Transkript metninde tüm dersleri açıkça listele, hiçbir dersi atlama:
           - Örnek ders formatı: "BM430 Proje Yönetimi 3.0 5.0 BB" -> {{"code": "BM430", "name": "Proje Yönetimi", "grade": "BB"}}
+          - Alternatif format: "BM211 - Diferansiyel Denklemler (Yarıyıl: 3. Yarıyıl)" -> {{"code": "BM211", "name": "Diferansiyel Denklemler", "grade": "BB"}} (Not belirtilmemişse varsayılan olarak "BB" kullan).
           - 7. ve 8. yarıyıllarda "BM" veya "MTH" önekiyle başlayan tüm dersleri listele (örneğin: "BM424 Derleyici Tasarımı", "BM496 Bilgi Mühendisliği ve Büyük Veriye Giriş").
           - 3. ve 4. yarıyıllarda "US" önekiyle başlayan dersleri listele (örneğin: "US201 Bilim Tarihi ve Felsefesi").
           - 5. ve 6. yarıyıllarda "MS" önekiyle başlayan dersleri listele (örneğin: "MS301 Endüstri İlişkileri").
         - Eksik zorunlu dersleri listele (zorunlu dersler aşağıda verilmiştir).
         - Her yarıyıl için Toplam AKTS değerinin ≥ 30 olup olmadığını kontrol et. Eğer bir yarıyılın AKTS değeri 30'dan düşükse, bunu "akts_issues" listesinde şu formatta belirt: "[Yarıyıl]: Toplam AKTS [değer] < 30".
-        - Genel not ortalamasını (Genel Ortalama) çıkar, **son yarıyılın** sonunda "Genel" kelimesinden sonra görünür (örneğin, transkript 7 yarıyıl içeriyorsa 7. yarıyılın sonunda). Not ortalaması bir sayıdır (örneğin, "2.63").
+        - Genel not ortالamasını (Genel Ortalama) çıkar, **son yarıyılın** sonunda "Genel" kelimesinden sonra görünür (örneğin, transkript 7 yarıyıl içeriyorsa 7. yarıyılın sonunda). Not ortalaması bir sayıdır (örneğin, "2.63").
         - Genel not ortالamasının ≥ 2.50 olup olmadığını kontrol et.
         - Transkript metni tutarsız biçimlendirme içerebilir (örneğin، fazla boşluk، eksik satırlar veya özel karakterler). En iyi şekilde ayrıştırmaya çalış:
           - Ders kodları genellikle 5-6 karakter uzunluğundadır (örneğin, "BM430", "US201", "MS301").
           - Ders adları birden fazla kelime olabilir (örneğin, "Proje Yönetimi", "Bilim Tarihi ve Felsefesi").
-          - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT", "YZ" formatındadır.
+          - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT" formatındadır.
         - Transkripti ayrıştıramazsanız veya gerekli bilgileri belirleyemezseniz، boş bir JSON nesnesi döndür:
           ```json
           {{}}
@@ -393,7 +405,7 @@ def upload():
             if not response_content:
                 return "Gemini API yanıtı temizlendikten sonra boş!", 500
 
-            # JSON ayrıştırmadan önce yanıtı kontrol et ودüzelt
+            # JSON ayrıştırmadan önce yanıtı kontrol et ve düzelt
             try:
                 extracted_data = json.loads(response_content)
             except json.JSONDecodeError as e:
@@ -407,86 +419,115 @@ def upload():
                 except json.JSONDecodeError as e:
                     return f"Gemini API yanıtını ayrıştırma hatası (geçerli JSON değil): {str(e)}\nYanıt: {response_content}", 500
 
+            # extracted_data'nın temel yapısını kontrol et ve eksik anahtarları ekle
+            if not isinstance(extracted_data, dict):
+                extracted_data = {}
+            extracted_data.setdefault("semesters", [])
+            extracted_data.setdefault("gpa", 0.0)
+            extracted_data.setdefault("missing_mandatory", [])
+            extracted_data.setdefault("akts_issues", [])
+            extracted_data.setdefault("can_graduate", False)
+            extracted_data.setdefault("graduation_message", "")
+            extracted_data.setdefault("failed_mandatory", [])
+            extracted_data.setdefault("failed_electives", [])
+            extracted_data.setdefault("elective_issues", [])
+
             # Manuel olarak dersleri çıkar ve Gemini API yanıtına ekle
             manual_courses = extract_courses_from_text(text)
-            extracted_data = merge_extracted_courses(extracted_data, manual_courses)
+            if manual_courses:
+                # Eğer manuel olarak dersler çıkarıldıysa, extracted_data["semesters"]'ı güncelle
+                for semester_name, courses in manual_courses.items():
+                    # Mevcut yarıyılı bul veya yenisini oluştur
+                    semester_found = False
+                    for sem in extracted_data["semesters"]:
+                        if sem["semester"] == semester_name:
+                            semester_found = True
+                            gemini_course_codes = {course["code"].strip() for course in sem["courses"]}
+                            for course in courses:
+                                if course["code"].strip() not in gemini_course_codes:
+                                    sem["courses"].append(course)
+                                    logging.debug(f"Eksik ders eklendi: {semester_name} - {course['code']}")
+                            break
+                    if not semester_found:
+                        extracted_data["semesters"].append({
+                            "semester": semester_name,
+                            "courses": courses,
+                            "akts": 0  # Varsayılan AKTS, transkriptte yoksa
+                        })
+                        logging.debug(f"Yeni yarıyıl eklendi: {semester_name}")
+            else:
+                logging.debug("Manuel olarak hiçbir ders çıkarılamadı.")
 
-            # Mevcut yarıyılları kontrol et وeksik yarıyılları bul
+            # Mevcut yarıyılları kontrol et ve eksik yarıyılları bul
             available_semesters = [sem["semester"] for sem in extracted_data["semesters"]]
-            last_semester = max([int(sem.split('.')[0]) for sem in available_semesters])
-            expected_semesters = [f"{i}. Yarıyıl" for i in range(1, 9)]  # 1. Yarıyıl'dان 8. Yarıyıl'a kadar
+            last_semester = 0
+            if available_semesters:
+                last_semester = max([int(sem.split('.')[0]) for sem in available_semesters])
+            else:
+                logging.debug("Hiçbir yarıyıl bulunamadı, last_semester 0 olarak ayarlandı.")
+
+            expected_semesters = [f"{i}. Yarıyıl" for i in range(1, 9)]
             missing_semesters = [sem for sem in expected_semesters if sem not in available_semesters]
 
-            # Başarısız zorunlu dersleri kontrol et (yerel olarak)
+            # Başarısız zorunlu dersleri kontrol et
             failed_mandatory = []
             for semester in extracted_data["semesters"]:
                 semester_name = semester["semester"]
                 if semester_name in MANDATORY_COURSES:
                     for course in semester["courses"]:
                         mandatory_course = next(
-                            (mc for mc in MANDATORY_COURSES[semester_name] if mc["code"] == course["code"]), None)
-                        if mandatory_course:
-                            # Dersin başarısız olup olmadığını kontrol et
-                            is_failed = False
-                            # Staj dersleri için (BM399, BM499) YT olmalı, YZ ise başarısız
-                            if course["code"] in ["BM399", "BM499"]:
-                                if course["grade"] != "YT":  # YZ veya başka bir not varsa başarısız
-                                    is_failed = True
-                            # Diğer dersler için FF veya FD ise başarısız
-                            elif course["grade"] in ["FF", "FD"]:
-                                is_failed = True
-
-                            if is_failed:
-                                failed_mandatory.append({
-                                    "semester": semester_name,
-                                    "code": course["code"],
-                                    "name": course["name"],
-                                    "grade": course["grade"]
-                                })
-                                logging.debug(
-                                    f"Başarısız zorunlu ders eklendi: {semester_name} - {course['code']} ({course['grade']})")
+                            (mc for mc in MANDATORY_COURSES[semester_name] if
+                             mc["code"].strip() == course["code"].strip()), None)
+                        if mandatory_course and course["grade"] in ["FF", "FD"]:
+                            failed_mandatory.append({
+                                "semester": semester_name,
+                                "code": course["code"],
+                                "name": course["name"],
+                                "grade": course["grade"]
+                            })
             extracted_data["failed_mandatory"] = failed_mandatory
 
             # Zorunlu derslerin eksik olup olmadığını kontrol et
-            extracted_data.setdefault("missing_mandatory", [])
-            # Mevcut yarıyıllardaki eksik dersleri kontrol et
+            missing_mandatory_codes = set()
             for semester in extracted_data["semesters"]:
                 semester_name = semester["semester"]
                 if semester_name in MANDATORY_COURSES:
-                    semester_courses = semester["courses"]
-                    semester_course_codes = {course["code"] for course in semester_courses}
-                    logging.debug(f"{semester_name} - Mevcut ders kodları: {semester_course_codes}")
+                    semester_course_codes = {course["code"].strip() for course in semester["courses"]}
+                    logging.debug(f"{semester_name} için mevcut ders kodları: {semester_course_codes}")
                     for req_course in MANDATORY_COURSES[semester_name]:
-                        if req_course["code"] not in semester_course_codes:
-                            extracted_data["missing_mandatory"].append({
-                                "semester": semester_name,
-                                "code": req_course["code"],
-                                "name": req_course["name"]
-                            })
-                            logging.debug(f"Eksik zorunlu ders eklendi: {semester_name} - {req_course['code']}")
-                        else:
-                            logging.debug(f"Zorunlu ders mevcut: {semester_name} - {req_course['code']}")
+                        if req_course["code"].strip() not in semester_course_codes:
+                            if req_course["code"] not in missing_mandatory_codes:
+                                extracted_data["missing_mandatory"].append({
+                                    "semester": semester_name,
+                                    "code": req_course["code"],
+                                    "name": req_course["name"]
+                                })
+                                missing_mandatory_codes.add(req_course["code"])
+                                logging.debug(f"Eksik zorunlu ders eklendi: {semester_name} - {req_course['code']}")
 
             # Eksik yarıyıllardaki zorunlu dersleri ekle
             for missing_sem in missing_semesters:
                 if missing_sem in MANDATORY_COURSES:
                     for req_course in MANDATORY_COURSES[missing_sem]:
-                        extracted_data["missing_mandatory"].append({
-                            "semester": missing_sem,
-                            "code": req_course["code"],
-                            "name": req_course["name"]
-                        })
-                        logging.debug(f"Eksik yarıyıl zorunlu dersi eklendi: {missing_sem} - {req_course['code']}")
+                        if req_course["code"] not in missing_mandatory_codes:
+                            extracted_data["missing_mandatory"].append({
+                                "semester": missing_sem,
+                                "code": req_course["code"],
+                                "name": req_course["name"]
+                            })
+                            missing_mandatory_codes.add(req_course["code"])
+                            logging.debug(f"Eksik yarıyıl zorunlu dersi eklendi: {missing_sem} - {req_course['code']}")
 
-            # Başarısız seçmeli dersleri kontrol et (US و MS)
+            # Başarısız seçmeli dersleri kontrol et (US ve MS)
             failed_electives = []
-            failed_elective_codes = set()  # تتبع الدروس الراسبة لمنع التكرار
+            failed_elective_codes = set()
             for semester in extracted_data["semesters"]:
                 semester_name = semester["semester"]
                 if semester_name in ELECTIVE_COURSES:
                     for course in semester["courses"]:
                         elective_course = next(
-                            (ec for ec in ELECTIVE_COURSES[semester_name] if ec["code"] == course["code"]), None)
+                            (ec for ec in ELECTIVE_COURSES[semester_name] if
+                             ec["code"].strip() == course["code"].strip()), None)
                         if elective_course and course["grade"] in ["FF", "FD"] and course[
                             "code"] not in failed_elective_codes:
                             failed_electives.append({
@@ -502,42 +543,49 @@ def upload():
             akts_issues = []
             for semester in extracted_data["semesters"]:
                 akts = semester.get("akts", 0)
+                if akts is None:
+                    akts = 0
                 if akts < 30:
                     akts_issues.append(f"{semester['semester']}: Toplam AKTS {akts} < 30")
-            # Eksik yarıyıllar için AKTS sorunları ekله
             for missing_sem in missing_semesters:
                 akts_issues.append(f"{missing_sem}: Toplam AKTS 0 < 30 (Yarıyıl eksik)")
             extracted_data["akts_issues"] = akts_issues
 
-            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapلا (veya son yarıyıl)
+            # 7. ve 8. yarıyıllarda tamamlanan seçmeli ders sayısını hesapla
             completed_electives = count_completed_electives(extracted_data["semesters"])
+            if completed_electives is None:
+                completed_electives = 0
+                logging.debug("completed_electives None olarak döndü, 0 olarak ayarlandı.")
 
             # elective_issues'ı güncelle
             required_electives = 10
-            extracted_data["elective_issues"] = []  # elective_issues'ı sıفırla
             if last_semester >= 7:
                 if completed_electives < required_electives:
                     missing_elective_count = required_electives - completed_electives
                     elective_issue = f"7. ve 8. Yarıyıl: Gerekli {required_electives} seçmeli dersten {completed_electives}'ünü tamamladı (BM veya MTH). {missing_elective_count} seçmeli ders eksik."
                     extracted_data["elective_issues"].append(elective_issue)
             else:
-                # Eğer son yarıyıl 7'den küçükse, tüm seçmeli dersler eksik
                 elective_issue = f"Seçmeli dersler eksik: Henüz 7. yarıyıla ulaşılmadı (son yarıyıl: {last_semester}. Yarıyıl). Gerekli {required_electives} seçmeli ders tamamlanmadı."
                 extracted_data["elective_issues"].append(elective_issue)
 
-            # Başarısız seçmeli dersler için sorunları ekله (US و MS)
+            # Başarısız seçmeli dersler için sorunları ekle (US ve MS)
             for failed_elective in failed_electives:
                 elective_issue = f"{failed_elective['semester']} döneminde '{failed_elective['name']}' seçmeli dersinden {failed_elective['grade']} ile başarısız oldunuz."
                 extracted_data["elective_issues"].append(elective_issue)
 
             # Mezuniyet durumunu güncelle
-            if (last_semester >= 8 and  # Mezuniyet için en az 8 yarıyıl olmalı
+            gpa = extracted_data.get("gpa", 0)
+            if gpa is None:
+                gpa = 0.0
+                logging.debug("GPA None olarak döndü, 0.0 olarak ayarlandı.")
+
+            if (last_semester >= 8 and
                     completed_electives >= required_electives and
                     not extracted_data["missing_mandatory"] and
                     not extracted_data["failed_mandatory"] and
                     not extracted_data["failed_electives"] and
                     not extracted_data["akts_issues"] and
-                    extracted_data.get("gpa", 0) >= 2.50):
+                    gpa >= 2.50):
                 extracted_data["can_graduate"] = True
                 extracted_data["graduation_message"] = "Tebrikler! Öğrenci tüm mezuniyet şartlarını karşıladı."
             else:
@@ -554,8 +602,8 @@ def upload():
                     reasons.append("seçmeli ders sayısında eksiklik")
                 if extracted_data["akts_issues"]:
                     reasons.append("bazı yarıyıllarda AKTS eksikliği")
-                if extracted_data.get("gpa", 0) < 2.50:
-                    reasons.append(f"genel not ortalaması {extracted_data.get('gpa', 0)} (2.50'nin altında)")
+                if gpa < 2.50:
+                    reasons.append(f"genel not ortalaması {gpa} (2.50'nin altında)")
                 extracted_data["can_graduate"] = False
                 extracted_data[
                     "graduation_message"] = f"Üzgünüz, öğrenci aşağıdaki nedenlerden dolayı mezun olamadı: {', '.join(reasons)}."
