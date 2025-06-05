@@ -199,7 +199,7 @@ def upload():
             logging.error(f"Metin çıkarma hatası: {str(e)}")
             return f"Metin çıkarma hatası: {str(e)}", 500
 
-        # Gemini API için prompt hazırlığı
+        # Gemini API için prompt hazırlığı (TÜM PROMPT BURADA GÜNCELLENDİ)
         prompt = f"""
         Akademik transkriptleri analiz eden yardımcı bir asistansınız. Aşağıdaki transkript metnine göre aşağıdaki adımları gerçekleştirin:
 
@@ -210,19 +210,21 @@ def upload():
 
         ### Talimatlar:
         - Her yarıyılı (örneğin, "1. Yarıyıl", "2. Yarıyıl" vb.) tanımlayın ve dersleri her yarıyıl altında listeleyin.
-        - Her ders için ders kodu (örneğin, "AIB101"), ders adı (örneğin, "Atatürk İlkeleri ve İnkılap Tarihi I") ve not (örneğin, "AA", "BB", "CC", "DD", "FF", "FD", "YT") ekleyin.
+        - Her ders için ders kodu (örneğin, "AIB101"), ders adı (örneğin, "Atatürk İlkeleri ve İnkılap Tarihi I") ve not (örneğin, "AA", "BB", "CC", "DD", "FF", "FD", "YT", "YZ") ekleyin.
         - Her yarıyıl için Toplam AKTS değerini çıkar ve JSON çıktısında her yarıyıl nesnesine "akts" anahtarıyla ekle.
         - Transkript metninde tüm dersleri açıkça listele, hiçbir dersi atlama:
           - Örnek ders formatı: "BM430 Proje Yönetimi 3.0 5.0 BB" -> {{"code": "BM430", "name": "Proje Yönetimi", "grade": "BB"}}
-          - Alternatif format: "BM211 - Diferansiyel Denklemler (Yarıyıl: 3. Yarıyıl)" -> {{"code": "BM211", "name": "Diferansiyel Denklemler", "grade": "BB"}} (Not belirtilmemişse varsayılan olarak "BB" kullan).
+          - Alternatif format: "BM211 - Diferansiyel Denklemler (Yarıyıl: 3. Yarıyıl)" -> {{"code": "BM211", "name": "Diferansiyel Denklemler", "grade": "BB"}}
+          - Staj dersleri için: "BM399 Yaz Dönemi Stajı I 0.0 2.0 YZ" -> {{"code": "BM399", "name": "Yaz Dönemi Stajı I", "grade": "YZ"}}
         - Transkript metni tutarsız biçimlendirme içerebilir (örneğin, fazla boşluk, eksik satırlar veya özel karakterler). En iyi şekilde ayrıştırmaya çalış:
           - Ders kodları genellikle 5-6 karakter uzunluğundadır (örneğin, "BM430", "US201", "MS301").
           - Ders adları birden fazla kelime olabilir (örneğin, "Proje Yönetimi", "Bilim Tarihi ve Felsefesi").
-          - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT" formatındadır.
+          - Notlar genellikle "AA", "BB", "CC", "DD", "FF", "FD", "YT", "YZ" formatındadır. "FF", "FD" ve "YZ" başarısız notlardır (geçer notlar: "AA", "BB", "CC", "DD", "YT").
         - Transkripti ayrıştıramazsanız veya gerekli bilgileri belirleyemezseniz, boş bir JSON nesnesi döndür:
           ```json
           {{}}
           ```
+        - Eğer bir dersin notu belirtilmemişse, varsayılan olarak "BB" kullan **ancak "YZ" notu açıkça belirtilmişse bunu kullan**.
         - Çıktının geçerli JSON formatında olduğundan emin olun (örneğin, dizeler için çift tırnak kullanın, doğru iç içe yapı).
         - Sonucu aşağıdaki JSON formatında döndür:
 
@@ -311,7 +313,7 @@ def upload():
             extracted_data["missing_semesters"] = missing_semesters  # Eksik yarıyılları ekle
             logging.debug(f"Eksik yarıyıllar: {missing_semesters}")
 
-            # Başarısız zorunlu dersleri kontrol et
+            # Başarısız zorunlu dersleri kontrol et (BURASI GÜNCELLENDİ: "YZ" eklendi)
             failed_mandatory = []
             for semester in extracted_data["semesters"]:
                 semester_name = semester["semester"]
@@ -320,7 +322,7 @@ def upload():
                         mandatory_course = next(
                             (mc for mc in MANDATORY_COURSES[semester_name] if
                              mc["code"].strip() == course["code"].strip()), None)
-                        if mandatory_course and course["grade"] in ["FF", "FD"]:
+                        if mandatory_course and course["grade"] in ["FF", "FD", "YZ"]:  # "YZ" eklendi
                             failed_mandatory.append({
                                 "semester": semester_name,
                                 "code": course["code"],
@@ -362,7 +364,7 @@ def upload():
                             logging.debug(f"Eksik yarıyıl zorunlu dersi eklendi: {missing_sem} - {req_course['code']}")
             extracted_data["missing_mandatory"] = missing_mandatory
 
-            # Başarısız seçmeli dersleri kontrol et (US ve MS)
+            # Başarısız seçmeli dersleri kontrol et (US ve MS) (BURASI GÜNCELLENDİ: "YZ" eklendi)
             failed_electives = []
             failed_elective_codes = set()
             for semester in extracted_data["semesters"]:
@@ -372,8 +374,7 @@ def upload():
                         elective_course = next(
                             (ec for ec in ELECTIVE_COURSES[semester_name] if
                              ec["code"].strip() == course["code"].strip()), None)
-                        if elective_course and course["grade"] in ["FF", "FD"] and course[
-                            "code"] not in failed_elective_codes:
+                        if elective_course and course["grade"] in ["FF", "FD", "YZ"] and course["code"] not in failed_elective_codes:  # "YZ" eklendi
                             failed_electives.append({
                                 "semester": semester_name,
                                 "code": course["code"],
@@ -403,7 +404,7 @@ def upload():
                 sem_key = f"{sem_num}. Yarıyıl"
                 if sem_key in available_semesters:
                     us_courses = [c for c in extracted_data["semesters"][available_semesters.index(sem_key)]["courses"]
-                                  if c["code"].startswith("US") and c["grade"] not in ["FF", "FD"]]
+                                  if c["code"].startswith("US") and c["grade"] not in ["FF", "FD", "YZ"]]  # "YZ" eklendi
                     if len(us_courses) < 1:
                         elective_issues.append(f"{sem_num}. Yarıyıl'da US kodlu bir ders eksik.")
                 elif sem_key in ELECTIVE_COURSES:
@@ -414,7 +415,7 @@ def upload():
                 sem_key = f"{sem_num}. Yarıyıl"
                 if sem_key in available_semesters:
                     ms_courses = [c for c in extracted_data["semesters"][available_semesters.index(sem_key)]["courses"]
-                                  if c["code"].startswith("MS") and c["grade"] not in ["FF", "FD"]]
+                                  if c["code"].startswith("MS") and c["grade"] not in ["FF", "FD", "YZ"]]  # "YZ" eklendi
                     if len(ms_courses) < 1:
                         elective_issues.append(f"{sem_num}. Yarıyıl'da MS kodlu bir ders eksik.")
                 elif sem_key in ELECTIVE_COURSES:
@@ -428,7 +429,7 @@ def upload():
                     bm_mth_courses += [c for c in extracted_data["semesters"][available_semesters.index(sem_key)]["courses"]
                                        if (c["code"].startswith("BM") or c["code"].startswith("MTH"))
                                        and c["code"] not in ["BM401", "BM499", "BM498"]
-                                       and c["grade"] not in ["FF", "FD"]]
+                                       and c["grade"] not in ["FF", "FD", "YZ"]]  # "YZ" eklendi
             if last_semester >= 7 and len(bm_mth_courses) < 10:
                 elective_issues.append(f"7. ve 8. Yarıyıl'da en az 10 BM/MTH dersi alınmalı (Alınan: {len(bm_mth_courses)})")
 
